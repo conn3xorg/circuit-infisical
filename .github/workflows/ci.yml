@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Conn3x
+        env: &gh
+          GH_TOKEN: ${{ github.token }}
+        run: &install |
+          tag=$(gh release view -R conn3xorg/conn3x --json tagName -q .tagName)
+          file="conn3x_${tag#v}_linux_amd64.tar.gz"
+          cd "$RUNNER_TEMP"
+          curl -sSfLO "https://github.com/conn3xorg/conn3x/releases/download/$tag/$file"
+          curl -sSfLO "https://github.com/conn3xorg/conn3x/releases/download/$tag/checksums.txt"
+          grep " $file\$" checksums.txt | sha256sum -c -
+          mkdir -p bin && tar -xzf "$file" -C bin conn3x
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: conn3x version
+      - run: conn3x fmt -check -recursive
+      - name: Validate
+        run: conn3x init -backend=false && conn3x validate
+      - name: Validate the example
+        working-directory: examples/local
+        run: conn3x init -backend=false && conn3x validate
+
+  e2e:
+    needs: validate
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [rocky10, fedora45, ubuntu2404, debian13]
+    name: e2e (${{ matrix.distro }})
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The test host images live in the Conn3x repo.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: conn3xorg/conn3x
+          ref: main
+          path: conn3x
+          persist-credentials: false
+          sparse-checkout: test/images
+      - name: Install Conn3x
+        env: *gh
+        run: *install
+      - name: Start the ${{ matrix.distro }} host
+        working-directory: examples/local
+        env:
+          CONTAINERFILE: ${{ github.workspace }}/conn3x/test/images/${{ matrix.distro }}/Containerfile
+          # Podman in the host container needs a rootful, privileged container.
+          PODMAN: sudo podman
+        run: ./up.sh
+      - name: Apply, then plan again with no changes
+        working-directory: examples/local
+        run: |
+          conn3x init
+          conn3x apply -auto-approve
+          conn3x plan -detailed-exitcode
+      # Bootstraps the first admin, stores a secret with the admin identity's
+      # token, restarts Infisical and reads the secret back with the same
+      # token. That needs the database, and ENCRYPTION_KEY and AUTH_SECRET
+      # unchanged across the restart. Some test hosts have no curl, so it
+      # runs in the Infisical container, which shares the host's network.
+      - name: Check status, bootstrap, a secret, and a restart
+        run: |
+          sudo podman exec -i circuit-infisical sh -eu <<'EOF'
+          c() { podman exec infisical curl -sf "$@"; }
+          u=http://127.0.0.1:8080
+          json='Content-Type: application/json'
+          c $u/api/status | grep -q '"message":"Ok"'
+          c $u/api/v1/admin/config | grep -q '"initialized":false'
+          tok=$(c -X POST -H "$json" -d '{"email":"admin@example.com","password":"correct-horse-battery-1","organization":"homelab"}' $u/api/v1/admin/bootstrap | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+          auth="Authorization: Bearer $tok"
+          p=$(c -X POST -H "$auth" -H "$json" -d '{"projectName":"ci","type":"secret-manager"}' $u/api/v1/projects | sed -n 's/^{"project":{"id":"\([^"]*\)".*/\1/p')
+          c -o /dev/null -X POST -H "$auth" -H "$json" -d "{\"projectId\":\"$p\",\"environment\":\"dev\",\"secretPath\":\"/\",\"secretValue\":\"hunter2-from-ci\"}" $u/api/v4/secrets/DB_PASSWORD
+          c -H "$auth" "$u/api/v4/secrets/DB_PASSWORD?projectId=$p&environment=dev" | grep -q '"secretValue":"hunter2-from-ci"'
+          if c -o /dev/null -X POST -H "$json" -d '{"email":"other@example.com","password":"correct-horse-battery-2","organization":"other"}' $u/api/v1/admin/bootstrap; then exit 1; fi
+          systemctl restart infisical
+          for _ in $(seq 120); do c -o /dev/null $u/api/status && break; sleep 1; done
+          c $u/api/v1/admin/config | grep -q '"initialized":true'
+          c -H "$auth" "$u/api/v4/secrets/DB_PASSWORD?projectId=$p&environment=dev" | grep -q '"secretValue":"hunter2-from-ci"'
+          echo "All checks passed."
+          EOF
+      - name: Clean up
+        if: always()
+        working-directory: examples/local
+        env:
+          PODMAN: sudo podman
+        run: ./down.sh
