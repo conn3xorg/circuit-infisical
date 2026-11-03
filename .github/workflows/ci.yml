@@ -72,6 +72,9 @@ jobs:
           conn3x init
           conn3x apply -auto-approve
           conn3x plan -detailed-exitcode
+          # The example's secrets reach the host write-only, so none of them
+          # may show up in state.
+          if grep -qF -e correct-horse-battery -e staple-paper-clip terraform.tfstate; then echo "A secret is in state." >&2; exit 1; fi
       # Bootstraps the first admin, stores a secret with the admin identity's
       # token, restarts Infisical and reads the secret back with the same
       # token. That needs the database, and ENCRYPTION_KEY and AUTH_SECRET
