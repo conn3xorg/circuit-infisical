@@ -107,6 +107,17 @@ jobs:
           c -H "$auth" "$u/api/v4/secrets/DB_PASSWORD?projectId=$p&environment=dev" | grep -q '"secretValue":"hunter2-from-ci"'
           echo "All checks passed."
           EOF
+      # When something fails, say why: the state and journal of each service
+      # the example runs, and systemd's reloads, which a package install can
+      # trigger while another service is starting.
+      - name: Show the services' status and logs
+        if: failure()
+        run: |
+          sudo podman exec circuit-infisical sh -c '
+            systemctl status --no-pager "postgresql*" "valkey*" infisical
+            journalctl -b --no-pager -o short-precise -u "postgresql*" -u "valkey*" -u infisical | tail -n 200
+            journalctl -b --no-pager -o short-precise | grep -E "Reloading|daemon-reload" | tail -n 20
+          ' || true
       - name: Clean up
         if: always()
         working-directory: examples/local
