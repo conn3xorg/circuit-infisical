@@ -26,7 +26,7 @@ variable "valkey_password" {
 }
 
 module "postgres" {
-  source = "github.com/conn3xorg/circuit-postgres?ref=v0.2.0"
+  source = "github.com/conn3xorg/circuit-postgres?ref=v0.3.0"
 
   hosts                = { secrets = "192.168.1.50" }
   ssh_private_key_file = "~/.ssh/id_ed25519"
@@ -37,7 +37,7 @@ module "postgres" {
 }
 
 module "valkey" {
-  source = "github.com/conn3xorg/circuit-valkey?ref=v0.1.0"
+  source = "github.com/conn3xorg/circuit-valkey?ref=v0.2.0"
 
   hosts                = { secrets = "192.168.1.50" }
   ssh_private_key_file = "~/.ssh/id_ed25519"
