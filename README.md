@@ -46,7 +46,7 @@ module "valkey" {
 }
 
 module "infisical" {
-  source = "github.com/conn3xorg/circuit-infisical?ref=v0.1.0"
+  source = "github.com/conn3xorg/circuit-infisical?ref=v0.1.1"
 
   depends_on = [module.postgres, module.valkey]
 
